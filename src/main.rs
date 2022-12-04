@@ -21,6 +21,7 @@ impl Constant {
             max,
         }
     }
+
 }
 
 // O1 is the first operator to evaluate
@@ -78,15 +79,15 @@ impl fmt::Display for Equation {
 
 
 
-trait Generator<V> {
-    fn value(&self) -> V;
+trait ExpressionGenerator {
+    fn value(&self) -> u32;
     // next moves to the next position. 
     // It returns true if it rolled over back to the first position
     fn next(&mut self) -> bool;
 }
 
 
-impl Generator<u32> for Constant {
+impl ExpressionGenerator for Constant {
 
     fn value(&self) -> u32 {
         self.val
@@ -103,7 +104,7 @@ impl Generator<u32> for Constant {
     }
 }
 
-fn pair_next<V, L: Generator<V>, R: Generator<V>>(a: &mut L, b: &mut R) -> bool {
+fn pair_next<L: ExpressionGenerator, R: ExpressionGenerator>(a: &mut L, b: &mut R) -> bool {
     if a.next() {
         if b.next() {
             return true;
@@ -112,24 +113,7 @@ fn pair_next<V, L: Generator<V>, R: Generator<V>>(a: &mut L, b: &mut R) -> bool 
     false
 }
 
-fn pair_next_until<V, L: Generator<V> + Display, R: Generator<V> + Display>(
-    a: &mut L,
-    b: &mut R,
-    is_bad: fn(a: &mut L, b: &mut R) -> bool
-) -> bool {
-    let mut did_roll_over = pair_next::<V, L, R>(a, b);
-    while is_bad(a, b) {
-        if pair_next::<V, L, R>(a, b) {
-            if did_roll_over {
-                break
-            }
-            did_roll_over = true
-        }
-    }
-    did_roll_over
-}
-
-impl Generator<u32> for O1 {
+impl ExpressionGenerator for O1 {
 
     fn value(&self) -> u32 {
         match self {
@@ -142,13 +126,24 @@ impl Generator<u32> for O1 {
     fn next(&mut self) -> bool {
         match self {
             O1::Constant(c) => c.next(),
-            O1::Multiplication(a, b) => pair_next::<u32, O1, Constant>(a, b),
-            O1::Division(a, b) => pair_next_until::<u32, O1, Constant>(a, b, |a, b| a.value() % b.value() != 0),
+            O1::Multiplication(a, b) => pair_next::<O1, Constant>(a, b),
+            O1::Division(a, b) => {
+                let mut did_roll_over = pair_next::<O1, Constant>(a, b);
+                while a.value() % b.value() != 0 {
+                    if pair_next::<O1, Constant>(a, b) {
+                        if did_roll_over {
+                            break
+                        }
+                        did_roll_over = true
+                    }
+                }
+                did_roll_over
+            }
         }
     }
 }
 
-impl Generator<u32> for O2 {
+impl ExpressionGenerator for O2 {
 
     fn value(&self) -> u32 {
         match self {
@@ -167,15 +162,17 @@ impl Generator<u32> for O2 {
     }
 }
 
-impl Generator<u32> for Equation {
+impl Equation {
 
-    fn value(&self) -> u32 {
-        self.lhs.value()
+    fn equals(&self) -> bool {
+        self.lhs.value() == self.rhs.value()
     }
 
-    fn next(&mut self) -> bool {
-        pair_next_until(&mut self.lhs, &mut self.rhs, |a, b| a.value() != b.value())
-    }
+}
+
+trait EquationGenerator<T: ExpressionGenerator> {
+    fn value(&self) -> Box<T>;
+    fn next(&mut self) -> bool;
 }
 
 struct O1Generator {
@@ -195,7 +192,7 @@ impl O1Generator {
     }
 }
 
-impl Generator<Box<O1>> for O1Generator {
+impl EquationGenerator<O1> for O1Generator {
 
     fn value(&self) -> Box<O1> {
         Box::new(
@@ -255,7 +252,7 @@ impl Generator<Box<O1>> for O1Generator {
 
 
 fn main() {
-    let mut generator = O1Generator::of_length(3);
+    let mut generator = O1Generator::of_length(5);
     loop {
         // TODO initialization for equation so it isn't invalid at the start
         let mut a = Equation{
@@ -268,8 +265,10 @@ fn main() {
             break;
         }
 
+        /*
         while !a.next() {
             println!("{}", a);
         }
+        */
     }
 }
