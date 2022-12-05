@@ -24,6 +24,10 @@ fn iexp10(v: u8) -> u32 {
     (10 as u32).pow((v - 1) as u32)
 }
 
+fn ilog10(v: i32) -> u8 {
+    (v as f32).log10() as u8
+}
+
 // O1 is the first operator to evaluate
 enum O1 {
     Constant(Constant),
@@ -261,10 +265,10 @@ impl ExpressionGenerator for O1 {
         match self {
             O1::Constant(c) => c.next_value(),
             O1::Multiplication(o1, c) => {
-                if c.next() {
+                if c.next_value() {
                     return true
                 }
-                o1.next()
+                o1.next_value()
             },
             O1::Division(o1, c) => {
                 if o1.next() {
@@ -409,11 +413,6 @@ impl ExpressionGenerator for O2 {
     }
 }
 
-trait ExpressionTemplateGenerator<T: ExpressionGenerator> {
-    fn value(&self) -> Box<T>;
-    fn next(&mut self) -> bool;
-}
-
 struct O1Generator {
     length: u8,
     is_mul: bool,
@@ -429,10 +428,6 @@ impl O1Generator {
             lhs: None,
         }
     }
-
-}
-
-impl ExpressionTemplateGenerator<O1> for O1Generator {
 
     fn value(&self) -> Box<O1> {
         Box::new(
@@ -453,69 +448,67 @@ impl ExpressionTemplateGenerator<O1> for O1Generator {
     }
 
     fn next(&mut self) -> bool {
-        if self.length < 2 {
+        if self.length <= 2 {
             // we can't generate anything other than a constant for O1 lengths less than 2
-            return true;
+            return false
         }
 
         if let Some(ref mut lhs) = self.lhs {
             // increment lhs see if we need to do anything 
-            if !lhs.next() {
-                return false;
+            if lhs.next() {
+                return true
             }
             // lhs rolled over!
+
+            // make lhs shorter?
+            let min_lhs = if self.is_mul {
+                1
+            } else {
+                ilog10(lhs.value().upper_bound()) + 1
+            };
+            if lhs.length > min_lhs {
+                self.lhs = Some(Box::new(O1Generator::of_length(lhs.length - 1)));
+                return true
+            }
+            // lhs can't be any shorter! 
 
             // switch from mul to div?
             self.is_mul = !self.is_mul;
             if !self.is_mul {
-                return false;
+                self.lhs = Some(Box::new(O1Generator::of_length(self.length - 2)));
+                return true;
             }
             // we already did div!
 
-            // make lhs shorter?
-            if lhs.length >= 2 {
-                self.lhs = Some(Box::new(O1Generator::of_length(lhs.length - 1)));
-                return false;
-            }
-            // lhs can't be any shorter! 
-
             // really rolled over this time
             self.lhs = None;
-            true
+            false
         } else {
             self.lhs = Some(Box::new(O1Generator::of_length(self.length - 2)));
-            false
+            true
         }
     }
 
 }
 
-/*
 
-fn main() {
-    let mut generator = O1Generator::of_length(5);
-    loop {
-        // TODO initialization for equation so it isn't invalid at the start
-        let mut a = Equation{
-            lhs: O2::O1(*generator.value()),
-            rhs: O2::O1(O1::Constant(Constant::of_size(1))),
-        };
-        println!("{}", a);
-
-        if generator.next() {
-            break;
-        }
-
-        /*
-        while !a.next() {
-            println!("{}", a);
-        }
-        */
-    }
+struct O2Generator {
+    len: u8,
+    is_addition: bool,
+    lhs: Option<Box<O2Generator>>
 }
 
-*/
+impl O2Generator {
 
+    fn of_length(len: u8) -> Self {
+        Self{
+            len,
+            is_addition: true,
+            lhs: None
+        }
+    }
+
+}
 
 #[cfg(test)]
 mod tests {
@@ -616,6 +609,29 @@ mod tests {
             one_times_one_div_two.next_value();
             assert_eq!(format!("{}", one_times_one_div_two), *answer);
         }
+    }
+
+    #[test]
+    fn test_o1_generator() {
+        let mut generator = O1Generator::of_length(8);
+        let answers = vec![
+            "10000000", "100000*1", "1000*1*1", "10*1*1*1", "1*10*1*1", "10/1*1*1", "100*10*1", 
+            "1*1*10*1", "1/1*10*1", "10*100*1", "1*1000*1", "1000/1*1", "10*1/1*1", "1*10/1*1",
+            "10/1/1*1", "10000*10", "100*1*10", "1*1*1*10", "1/1*1*10", "10*10*10", "1*100*10",
+            "100/1*10", "1*1/1*10", "1/1/1*10", "1000*100", "10*1*100", "1*10*100", "10/1*100",
+            "100*1000", "1*1*1000", "1/1*1000", "10*10000", "1*100000", "100000/1", "1000*1/1",
+            "10*1*1/1", "1*10*1/1", "10/1*1/1", "100*10/1", "1*1*10/1", "1/1*10/1", "10*100/1",
+            "1*1000/1", "1000/1/1", "10*1/1/1", "1*10/1/1", 
+        ];
+        for answer in &answers {
+            let mut eqn = generator.value();
+            println!("{}", eqn);
+            assert_eq!(format!("{}", eqn), *answer);
+            assert!(eqn.next_value());
+            assert!(generator.next());
+        }
+        assert_eq!(format!("{}", generator.value()), "10/1/1/1");
+
     }
 }
 
