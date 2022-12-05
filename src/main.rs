@@ -6,27 +6,6 @@ struct Constant {
     max: u32,
 }
 
-impl Constant {
-    fn of_size(len: u8) -> Self {
-        assert!(len > 0, "cannot create 0 len constant");
-        let min = iexp10(len);
-        let max = iexp10(len + 1);
-        Constant{
-            val: min,
-            min,
-            max,
-        }
-    }
-
-}
-
-fn iexp10(v: u8) -> u32 {
-    (10 as u32).pow((v - 1) as u32)
-}
-
-fn ilog10(v: i32) -> u8 {
-    (v as f32).log10() as u8
-}
 
 // O1 is the first operator to evaluate
 enum O1 {
@@ -45,6 +24,29 @@ enum O2 {
 struct Equation {
     lhs: O2,
     rhs: O2
+}
+
+
+impl Constant {
+
+    fn of_size(len: u8) -> Self {
+        assert!(len > 0, "cannot create 0 len constant");
+        let min = Self::iexp10(len);
+        let max = Self::iexp10(len + 1);
+        Constant{
+            val: min,
+            min,
+            max,
+        }
+    }
+
+    fn ilog10(v: i32) -> u8 {
+        (v as f32).log10() as u8
+    }
+
+    fn iexp10(v: u8) -> u32 {
+        (10 as u32).pow((v - 1) as u32)
+    }
 }
 
 
@@ -440,7 +442,13 @@ impl O1Generator {
                     if self.is_mul {
                         O1::Multiplication(value, constant)
                     } else {
-                        O1::Division(value, constant)
+                        let numerator = value.value();
+                        let denominator = constant.value();
+                        let mut eventually_divides = O1::Division(value, constant);
+                        if numerator % denominator != 0 {
+                            eventually_divides.next_value();
+                        }
+                        eventually_divides
                     }
                 }
             }
@@ -464,7 +472,7 @@ impl O1Generator {
             let min_lhs = if self.is_mul {
                 1
             } else {
-                ilog10(lhs.value().upper_bound()) + 1
+                Constant::ilog10(lhs.value().upper_bound()) + 1
             };
             if lhs.length > min_lhs {
                 self.lhs = Some(Box::new(O1Generator::of_length(lhs.length - 1)));
@@ -476,7 +484,7 @@ impl O1Generator {
             self.is_mul = !self.is_mul;
             if !self.is_mul {
                 self.lhs = Some(Box::new(O1Generator::of_length(self.length - 2)));
-                return true;
+                return true
             }
             // we already did div!
 
@@ -493,18 +501,72 @@ impl O1Generator {
 
 
 struct O2Generator {
-    len: u8,
+    length: u8,
     is_addition: bool,
-    lhs: Option<Box<O2Generator>>
+    lhs: Option<Box<O2Generator>>,
+    rhs: O1Generator,
 }
 
 impl O2Generator {
 
-    fn of_length(len: u8) -> Self {
+    fn of_length(length: u8) -> Self {
         Self{
-            len,
+            length,
             is_addition: true,
-            lhs: None
+            lhs: None,
+            rhs: O1Generator::of_length(length)
+        }
+    }
+
+    fn value(&self) -> Box<O2> {
+        let rhs = self.rhs.value();
+        Box::new(
+            match &self.lhs {
+                None => O2::O1(*rhs),
+                Some(gen) => {
+                    if self.is_addition {
+                        O2::Addition(gen.value(), *rhs)
+                    } else {
+                        O2::Subtraction(gen.value(), *rhs)
+                    }
+                }
+            }
+        )
+    }
+
+    fn next(&mut self) -> bool {
+        if self.length <= 2 {
+            // we can't generate anything other than a constant for O1 lengths less than 2
+            return false
+        }
+        if self.rhs.next() {
+            return true
+        }
+
+        if let Some(o2) = &mut self.lhs {
+            if o2.next() {
+                return true
+            }
+
+            // switch from add to sub?
+            self.is_addition = !self.is_addition;
+            if !self.is_addition {
+                return true
+            }
+
+            // make lhs longer?
+            if o2.length < self.length - 2 {
+                let lhs_len = o2.length + 1;
+                self.lhs = Some(Box::new(O2Generator::of_length(lhs_len)));
+                self.rhs = O1Generator::of_length(self.length - lhs_len - 1);
+                return true
+            }
+
+            false
+        } else {
+            self.lhs = Some(Box::new(Self::of_length(1)));
+            self.rhs = O1Generator::of_length(self.length - 2);
+            true
         }
     }
 
@@ -631,7 +693,25 @@ mod tests {
             assert!(generator.next());
         }
         assert_eq!(format!("{}", generator.value()), "10/1/1/1");
+    }
 
+    #[test]
+    fn test_o2_generator() {
+        let mut generator = O2Generator::of_length(6);
+        let answers = vec![
+            "100000", "1000*1", "10*1*1", "1*10*1", "10/1*1", "100*10", "1*1*10", "1/1*10", "10*100",
+            "1*1000", "1000/1", "10*1/1", "1*10/1", "10/1/1", "1+1000", "1+10*1", "1+1*10", "1+10/1",
+            "1-1000", "1-10*1", "1-1*10", "1-10/1", "10+100", "10+1*1", "10+1/1", "10-100", "10-1*1",
+            "10-1/1", "100+10", "1*1+10", "1/1+10", "1+1+10", "1-1+10", "1+1-10", "1-1-10", "1000+1",
+            "10*1+1", "1*10+1", "10/1+1", "1+10+1", "1-10+1", "10+1+1", "10-1+1", "10+1-1", 
+        ];
+        for answer in &answers {
+            let mut eqn = generator.value();
+            assert_eq!(format!("{}", eqn), *answer);
+            assert!(eqn.next_value());
+            assert!(generator.next());
+        }
+        assert_eq!(format!("{}", generator.value()), "10-1-1");
     }
 }
 
