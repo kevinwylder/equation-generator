@@ -6,26 +6,19 @@ struct Constant {
     max: u32,
 }
 
-
-// O1 is the first operator to evaluate
+// O1 is the top level operator to evaluate
 enum O1 {
     Constant(Constant),
     Multiplication(Box<O1>, Constant),
     Division(Box<O1>, Constant)
 }
 
-// O2 is the second operator to evaluate
+// O2 is the lower level operator to evaluate
 enum O2 {
     O1(O1),
     Addition(Box<O2>, O1),
     Subtraction(Box<O2>, O1)
 }
-
-struct Equation {
-    lhs: O2,
-    rhs: O2
-}
-
 
 impl Constant {
 
@@ -76,7 +69,7 @@ impl fmt::Display for O2 {
     }
 }
 
-impl fmt::Display for Equation {
+impl fmt::Display for EquationGenerator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}={}", self.lhs, self.rhs)
     }
@@ -150,7 +143,6 @@ impl ExpressionGenerator for Constant {
 
 }
 
-
 impl O1 {
 
     fn mul_iter_constant_up(o1: &mut O1, c: &mut Constant, val: i32) -> bool {
@@ -166,6 +158,9 @@ impl O1 {
     }
 
     fn div_iter_constant_up(o1: &mut O1, c: &mut Constant, val: i32) -> bool {
+        if val == 0 {
+            return false;
+        }
         let upper_mul = o1.upper_bound() / val;
         if upper_mul < c.value() {
             return false
@@ -366,12 +361,18 @@ impl ExpressionGenerator for O2 {
         match self {
             O2::O1(o1) => o1.set_value(val),
             O2::Addition(o2, o1) => {
-                assert!(o1.set_value(o1.lower_bound()), "cannot set o1 {} to the lower bound!", o1);
-                Self::add_iter_o1_up(o2, o1, val, 0)
+                if !o1.set_value(o1.lower_bound()) {
+                    false
+                } else {
+                    Self::add_iter_o1_up(o2, o1, val, 0)
+                }
             },
             O2::Subtraction(o2, o1) => {
-                assert!(o1.set_value(o1.lower_bound()), "cannot set o1 {} to the lower bound!", o1);
-                Self::sub_iter_o1_up(o2, o1, val, 0)
+                if !o1.set_value(o1.lower_bound()) {
+                    false
+                } else {
+                    Self::sub_iter_o1_up(o2, o1, val, 0)
+                }
             }
         }
     }
@@ -415,6 +416,7 @@ impl ExpressionGenerator for O2 {
     }
 }
 
+
 struct O1Generator {
     length: u8,
     is_mul: bool,
@@ -446,7 +448,9 @@ impl O1Generator {
                         let denominator = constant.value();
                         let mut eventually_divides = O1::Division(value, constant);
                         if numerator % denominator != 0 {
-                            eventually_divides.next_value();
+                            if !eventually_divides.next_value() {
+                                panic!("divison unsatisfyible: {}", eventually_divides);
+                            }
                         }
                         eventually_divides
                     }
@@ -499,7 +503,6 @@ impl O1Generator {
 
 }
 
-
 struct O2Generator {
     length: u8,
     is_addition: bool,
@@ -548,13 +551,13 @@ impl O2Generator {
                 return true
             }
 
-            // switch from add to sub?
+            // switch from add to sub yet?
             self.is_addition = !self.is_addition;
             if !self.is_addition {
                 return true
             }
 
-            // make lhs longer?
+            // can we make lhs longer?
             if o2.length < self.length - 2 {
                 let lhs_len = o2.length + 1;
                 self.lhs = Some(Box::new(O2Generator::of_length(lhs_len)));
@@ -568,6 +571,97 @@ impl O2Generator {
             self.rhs = O1Generator::of_length(self.length - 2);
             true
         }
+    }
+
+}
+
+struct EquationGenerator {
+    lhs_gen: O2Generator,
+    rhs_gen: O2Generator,
+    lhs: Box<O2>,
+    rhs: Box<O2>,
+}
+
+impl EquationGenerator {
+    
+    // of_length constructs an equation generator and initializes it to the first equation.
+    // it may return none if you pass in an impossible length (like 4)
+    fn of_length(length: u8) -> Option<Self> {
+        // starts off garbage
+        let mut gen = Self{ 
+            lhs_gen: O2Generator::of_length(length - 1),
+            rhs_gen: O2Generator::of_length(0), 
+            lhs: Box::new(O2::O1(O1::Constant(Constant::of_size(1)))),
+            rhs: Box::new(O2::O1(O1::Constant(Constant::of_size(1)))),
+        };
+        if !gen.make_rhs_larger() { 
+            None
+        } else {
+            Some(gen)
+        }
+    }
+
+    fn make_rhs_larger(&mut self) -> bool {
+        while self.lhs_gen.length - 1 > self.rhs_gen.length {
+            self.lhs_gen = O2Generator::of_length(self.lhs_gen.length - 1);
+            self.rhs_gen = O2Generator::of_length(self.rhs_gen.length + 1);
+            self.lhs = self.lhs_gen.value();
+            self.rhs = self.rhs_gen.value();
+            loop {
+                if self.lhs.set_value(self.rhs.value()) {
+                    return true
+                }
+                if self.rhs.next_value() {
+                    continue
+                }
+                if self.lhs_gen.next() {
+                    self.lhs = self.lhs_gen.value();
+                    continue
+                }
+                if self.rhs_gen.next() {
+                    self.rhs = self.rhs_gen.value();
+                    continue
+                }
+                println!("failed to set {} = {}", self.lhs, self.rhs);
+                break
+            }
+        }
+        return false
+    }
+
+    fn next(&mut self) -> bool {
+        // see if there's another way to satisfy LHS
+        if self.lhs.next() {
+            return true
+        }
+
+        // find the next expression on the RHS
+        while self.rhs.next_value() {
+            if self.lhs.set_value(self.rhs.value()) {
+                return true
+            }
+        }
+
+        // find another expression template for the LHS
+        while self.lhs_gen.next() {
+            self.rhs = self.rhs_gen.value();
+            self.lhs = self.lhs_gen.value();
+            if self.lhs.set_value(self.rhs.value()) {
+                return true
+            }
+        }
+
+        // find another expression template for the RHS
+        while self.rhs_gen.next() {
+            self.rhs = self.rhs_gen.value();
+            self.lhs = self.lhs_gen.value();
+            if self.lhs.set_value(self.rhs.value()) {
+                return true
+            }
+        }
+
+        // no more expression templates for RHS, need to change the size of eqn
+        self.make_rhs_larger()
     }
 
 }
@@ -716,4 +810,11 @@ mod tests {
 }
 
 fn main() {
+    let mut gen = EquationGenerator::of_length(10).unwrap();
+    loop {
+        println!("{}", gen);
+        if !gen.next() {
+            break
+        }
+    }
 }
