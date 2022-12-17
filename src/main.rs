@@ -810,7 +810,7 @@ mod tests {
 }
 
 fn main() {
-    let mut gen = EquationGenerator::of_length(10).unwrap();
+    let mut gen = EquationGenerator::of_length(8).unwrap();
     loop {
         println!("{}", gen);
         if !gen.next() {
