@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 use std::ptr;
 use std::fmt;
+use std::ops;
 
-#[derive(Copy,Clone,Debug)]
+#[derive(Copy,Clone,Debug,PartialEq)]
 enum Key {
     Digit(u8),
     Plus,
@@ -13,6 +14,8 @@ enum Key {
 }
 
 impl Key {
+
+    const OPERATORS: [Key; 5] = [Key::Plus, Key::Minus, Key::Multiply, Key::Divide, Key::Equal];
 
     fn parse(c: char) -> Result<Key, char> {
         match c {
@@ -28,8 +31,161 @@ impl Key {
             _ => Err(c)
         }
     }
+
+    // key_idx assigns a numeric value to the key between 0 and 14 (inclusive) for array indexing
+    fn key_idx(self) -> usize {
+        match self {
+            Key::Digit(d) => {
+                assert!(d < 10, "key index out of bounds");
+                d as usize
+            },
+            Key::Plus => 10,
+            Key::Minus => 11,
+            Key::Multiply => 12,
+            Key::Divide => 13,
+            Key::Equal => 14,
+        }
+    }
+
+    // integer_next increments the underlying integer if possible
+    // returns true if the key was either rolled over, or is an operator
+    fn integer_next(&mut self) -> bool {
+        match *self {
+            Key::Digit(d) => {
+                assert!(d < 10, "key index out of bounds");
+                if d != 9 {
+                    *self = Key::Digit(d+1);
+                    false
+                } else {
+                    *self = Key::Digit(0);
+                    true
+                }
+            },
+            _ => true,
+        }
+    }
+
+    // operator_next increments the underlying operator to a different operator returns
+    // true if the operation was successful and did not roll over back to the starting operator
+    fn operator_next(&mut self) -> bool {
+        match *self {
+            Key::Plus => {
+                *self = Key::Minus;
+                true
+            },
+            Key::Minus => {
+                *self = Key::Multiply;
+                true
+            }
+            Key::Multiply => {
+                *self = Key::Divide;
+                true
+            }
+            Key::Divide => {
+                *self = Key::Plus;
+                false
+            }
+            _ => false
+        }
+
+    }
+
+}
+
+#[derive(Copy,Clone,PartialEq,Debug)]
+enum Possibility {
+    Certain,
+    Impossible,
+    Unknown,
+}
+
+struct PossibilityMatrix {
+    // 15 keys * 10 slots
+    matrix: [Possibility; 150],
+}
+
+impl ops::Index<(usize, Key)> for PossibilityMatrix {
+    type Output = Possibility;
+
+    fn index(&self, idx: (usize, Key)) -> &Possibility {
+        let (slot, key) = idx;
+        assert!(slot < 15, "slot index out of bounds");
+        &self.matrix[key.key_idx() + 15 * slot]
+    }
+}
+
+impl ops::IndexMut<(usize, Key)> for PossibilityMatrix {
+    fn index_mut(&mut self, idx: (usize, Key)) -> &mut Possibility {
+        let (slot, key) = idx;
+        assert!(slot < 15, "slot index out of bounds");
+        &mut self.matrix[key.key_idx() + 15 * slot]
+    }
+}
+
+impl PossibilityMatrix {
+
+    fn blank() -> Self {
+        let mut matrix = Self{
+            matrix: [Possibility::Unknown; 150],
+        };
+
+        // assign impossible to operators on the edges
+        for slot in [0, 9] {
+            for key in Key::OPERATORS {
+                matrix[(slot, key)] = Possibility::Impossible;
+            }
+        }
+        matrix[(0, Key::Digit(0))] = Possibility::Impossible;
+        
+        matrix
+    }
+    
+    fn set_certain(&mut self, slot: ProgIndex, key: Key) {
+        // sanity check
+        assert_ne!(self[(slot, key)], Possibility::Impossible, "{:?} in slot {} was previously impossible", key, slot);
+
+        let offset = slot * 15;
+        for i in 0..15 {
+            if i == key.key_idx() {
+                self.matrix[offset + i] = Possibility::Certain
+            } else {
+                // If you are certain of a value, all other keys are impossible in that slot
+                self.matrix[offset + i] = Possibility::Impossible
+            }
+        }
+        // if the key was an operator, the surrounding slots aren't
+        if Key::OPERATORS.contains(&key) {
+            for operator in Key::OPERATORS {
+                self.matrix[offset - 15 + operator.key_idx()] = Possibility::Impossible;
+                self.matrix[offset + 15 + operator.key_idx()] = Possibility::Impossible;
+            }
+            // also the next digit can't be a 0 either
+            self.matrix[offset + 15 + Key::Digit(0).key_idx()] = Possibility::Impossible
+        }
+    }
+
+    fn set_impossible(&mut self, slot: ProgIndex, key: Key) {
+        // sanity check
+        assert_ne!(self[(slot, key)], Possibility::Certain, "{:?} in slot {} was previously certain", key, slot);
+
+        self.matrix[slot * 15 + key.key_idx()] = Possibility::Impossible
+    }
+    
+    fn int_bounds(&self, start: ProgIndex, width: IntWidth) -> (i32, i32) {
+        
+        (0, 0)
+    }
+
+}
+
+struct Equation {
+    keys: [Key; 10],
+}
+
+impl Equation {
     
 }
+
 
 #[derive(Debug)]
 enum CompileError {
@@ -47,12 +203,18 @@ enum EvalError {
     DivZero,
 }
 
+
 enum AST {
-    Integer(i32),
-    Lower(Box<AST>, LowerOp, Box<AST>),
+    Equals(Box<AST>, Box<AST>),
     Upper(Box<AST>, UpperOp, Box<AST>),
-    Equals(Box<AST>, Box<AST>)
+    Lower(Box<AST>, LowerOp, Box<AST>),
+    Integer(i32, ProgIndex, IntWidth),
 }
+
+// ProgIndex is the index into the program where this Key sequence starts
+type ProgIndex = usize;
+// IntWidth is the width of the integer in Key
+type IntWidth = usize;
 
 enum LowerOp {
     Mul,
@@ -67,43 +229,90 @@ enum UpperOp {
 trait KeyStream {
     fn next_key(&mut self) -> Option<Key>;
     fn peek_key(&mut self) -> Option<Key>;
+
+    fn parse_int(&mut self) -> Result<(i32, IntWidth), CompileError> {
+        let mut value = match self.next_key() {
+            Some(Key::Digit(v)) => v as i32,
+            Some(k) => return Err(CompileError::UnexpectedOperator(k)),
+            None => return Err(CompileError::EndOfProgram)
+        };
+        let mut width = 1;
+        if value == 0 {
+            return Err(CompileError::LeadingZero)
+        }
+        loop {
+            match self.peek_key() {
+                Some(Key::Digit(v)) => {
+                    self.next_key();
+                    width += 1;
+                    value = (value * 10) + (v as i32)
+                }
+                _ => return Ok((value, width))
+            }
+        }
+    }
 }
 
 impl AST {
 
     pub fn compile<K: KeyStream>(data: &mut K) -> Result<AST, CompileError> {
-        let val = Self::parse_int(data)?;
-        let mut tree = AST::Integer(val);
+        let (val, width) = data.parse_int()?;
+        let mut tree = AST::Integer(val, 0, width);
+        let mut index = width;
         loop {
             match data.next_key() {
                 None => return Ok(tree),
                 Some(k) => {
-                    let rhs = Self::parse_int(data)?;
-                    AST::append(&mut tree, k, rhs)?;
+                    let (val, width) = data.parse_int()?;
+                    let integer = AST::Integer(val, index + 1, width);
+                    tree.append(k, integer)?;
+                    index += 1 + width;
                 }
             }
         }
     }
 
-    fn parse_int<K: KeyStream>(data: &mut K) -> Result<i32, CompileError> {
-        let mut value = match data.next_key() {
-            Some(Key::Digit(v)) => v as i32,
-            Some(k) => return Err(CompileError::UnexpectedOperator(k)),
-            None => return Err(CompileError::EndOfProgram)
-        };
-        if value == 0 {
-            return Err(CompileError::LeadingZero)
-        }
-        loop {
-            match data.peek_key() {
-                Some(Key::Digit(v)) => {
-                    data.next_key();
-                    value = (value * 10) + (v as i32)
-                }
-                _ => return Ok(value)
+    // bounds computes the upper and lower bound for each expression
+    fn bounds(self, constraints: &PossibilityMatrix) -> (i32, i32) {
+        match self {
+            AST::Equals(lhs, rhs) => {
+                // "Equals" really computes the bounds of lhs and rhs differences
+                let (lhs_low, lhs_high) = lhs.bounds(constraints);
+                let (rhs_low, rhs_high) = rhs.bounds(constraints);
+                (lhs_low - rhs_high, lhs_high - rhs_low)
             }
+            AST::Upper(lhs, op, rhs) => {
+                match op {
+                    UpperOp::Plus => {
+                        let (lhs_low, lhs_high) = lhs.bounds(constraints);
+                        let (rhs_low, rhs_high) = rhs.bounds(constraints);
+                        (lhs_low + rhs_low, lhs_high + rhs_high)
+                    },
+                    UpperOp::Minus => {
+                        let (lhs_low, lhs_high) = lhs.bounds(constraints);
+                        let (rhs_low, rhs_high) = rhs.bounds(constraints);
+                        (lhs_low - rhs_high, lhs_high - rhs_low)
+                    },
+                }
+            },
+            AST::Lower(lhs, op, rhs) => {
+                match op {
+                    LowerOp::Mul => {
+                        let (lhs_low, lhs_high) = lhs.bounds(constraints);
+                        let (rhs_low, rhs_high) = rhs.bounds(constraints);
+                        (lhs_low * rhs_low, lhs_high * rhs_high)
+                    },
+                    LowerOp::Div => {
+                        let (lhs_low, lhs_high) = lhs.bounds(constraints);
+                        let (rhs_low, rhs_high) = rhs.bounds(constraints);
+                        (lhs_low / rhs_high, lhs_high / rhs_low)
+                    },
+                }
+            }
+            AST::Integer(_, idx, width) => constraints.int_bounds(idx, width)
         }
     }
+
     
     // https://stackoverflow.com/questions/29570781/temporarily-move-out-of-borrowed-content
     // https://github.com/alecmocatta/replace_with/blob/master/src/lib.rs
@@ -116,26 +325,26 @@ impl AST {
         }
     }
 
-    fn append(&mut self, k: Key, v: i32) -> Result<(), CompileError> {
+    fn append(&mut self, k: Key, integer: AST) -> Result<(), CompileError> {
         match k {
             Key::Digit(_) => return Err(CompileError::UnexpectedNumber(k)),
-            Key::Multiply => self.append_lower(LowerOp::Mul, v),
-            Key::Divide => self.append_lower(LowerOp::Div, v),
-            Key::Plus =>  self.append_upper(UpperOp::Plus, v),
-            Key::Minus => self.append_upper(UpperOp::Minus, v),
-            Key::Equal => self.append_equals(v)?,
+            Key::Multiply => self.append_lower(LowerOp::Mul, integer),
+            Key::Divide => self.append_lower(LowerOp::Div, integer),
+            Key::Plus =>  self.append_upper(UpperOp::Plus, integer),
+            Key::Minus => self.append_upper(UpperOp::Minus, integer),
+            Key::Equal => self.append_equals(integer)?,
         }
         Ok(())
     }
 
-    fn append_equals(&mut self, v: i32) -> Result<(), CompileError> {
+    fn append_equals(&mut self, integer: AST) -> Result<(), CompileError> {
         match self {
             AST::Equals(_, _) => Err(CompileError::DuplicateEquals),
             _ => {
                 self.unsafe_replace_with(
                     |_self| AST::Equals(
                         Box::new(_self),
-                        Box::new(AST::Integer(v)),
+                        Box::new(integer),
                     )
                 );
                 Ok(())
@@ -143,7 +352,7 @@ impl AST {
         }
     }
 
-    fn append_upper(&mut self, op: UpperOp, v: i32) {
+    fn append_upper(&mut self, op: UpperOp, integer: AST) {
         let side: &mut Self = match self {
             AST::Equals(_, rhs) => rhs,
             _ => self
@@ -152,14 +361,14 @@ impl AST {
             |_self| AST::Upper(
                 Box::new(_self),
                 op,
-                Box::new(AST::Integer(v))
+                Box::new(integer),
             )
         );
     }
 
-    fn append_lower(&mut self, op: LowerOp, v: i32) {
+    fn append_lower(&mut self, op: LowerOp, integer: AST) {
         let side: &mut Self = match self {
-            AST::Equals(_, rhs) => return rhs.append_lower(op, v),
+            AST::Equals(_, rhs) => return rhs.append_lower(op, integer),
             AST::Upper(_, _, rhs) => rhs,
             _ => self,
         };
@@ -167,7 +376,7 @@ impl AST {
             |_self| AST::Lower(
                 Box::new(_self),
                 op,
-                Box::new(AST::Integer(v))
+                Box::new(integer)
             )
         )
     }
@@ -175,7 +384,7 @@ impl AST {
     fn value(&self) -> Result<i32, EvalError> {
         Ok(
             match self {
-                AST::Integer(i) => *i,
+                AST::Integer(i, _, _) => *i,
                 AST::Lower(lhs, op, rhs) =>
                     match op {
                         LowerOp::Mul => lhs.value()? * rhs.value()?,
@@ -225,7 +434,7 @@ impl fmt::Debug for AST {
                     LowerOp::Div => write!(f, "({:?}/{:?})", lhs, rhs)
                 }
             },
-            AST::Integer(i) => i.fmt(f)
+            AST::Integer(i, _, _) => i.fmt(f)
         }
     }
 }
@@ -246,7 +455,7 @@ impl fmt::Display for AST {
                     LowerOp::Div => write!(f, "{}/{}", lhs, rhs)
                 }
             },
-            AST::Integer(i) => i.fmt(f)
+            AST::Integer(i, _, _) => i.fmt(f)
         }
     }
 }
@@ -255,9 +464,9 @@ impl fmt::Display for AST {
 mod tests {
     use super::*;
     use std::str;
-    use std::iter::{Peekable, Iterator};
+    use std::iter;
 
-    impl KeyStream for Peekable<str::Chars<'static>> {
+    impl KeyStream for iter::Peekable<str::Chars<'static>> {
 
         fn next_key(&mut self) -> Option<Key> {
             if let Some(c) = self.next() {
@@ -326,6 +535,22 @@ mod tests {
                 panic!("{} should not compile", prog)
             }
         }
+    }
+
+    #[test]
+    fn test_constraint_matrix() {
+        let mut matrix = PossibilityMatrix::blank();
+        assert_eq!(matrix[(0, Key::Equal)], Possibility::Impossible);
+        assert_eq!(matrix[(0, Key::Digit(0))], Possibility::Impossible);
+
+        matrix.set_certain(1, Key::Multiply);
+        assert_eq!(matrix[(2, Key::Divide)], Possibility::Impossible);
+        assert_eq!(matrix[(2, Key::Digit(1))], Possibility::Unknown);
+        assert_eq!(matrix[(2, Key::Digit(0))], Possibility::Impossible);
+
+        matrix.set_impossible(2, Key::Digit(1));
+        assert_eq!(matrix[(2, Key::Digit(1))], Possibility::Impossible);
+        assert_eq!(matrix[(2, Key::Digit(2))], Possibility::Unknown);
     }
 
 }
