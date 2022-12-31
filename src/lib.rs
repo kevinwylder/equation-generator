@@ -1,5 +1,5 @@
-#![allow(dead_code)]
 use std::fmt::Write;
+use std::str;
 use std::iter;
 use std::ptr;
 use std::fmt;
@@ -77,7 +77,7 @@ trait KeyStream {
 
 /// Key is a character in the nerdle game
 #[derive(Copy,Clone,Debug,PartialEq)]
-enum Key {
+pub enum Key {
     Digit(u8),
     Plus,
     Minus,
@@ -87,13 +87,13 @@ enum Key {
 }
 
 /// PossibilityMatrix stores constraints on the board
-struct PossibilityMatrix {
+pub struct PossibilityMatrix {
     // 15 keys * 8 slots
     matrix: [Possibility; 120],
 }
 
 #[derive(Copy,Clone,PartialEq,Debug)]
-enum Possibility {
+pub enum Possibility {
     Certain,
     Impossible,
     Unknown,
@@ -153,7 +153,7 @@ impl PossibilityMatrix {
     fn key_idx(k: Key) -> usize {
         match k {
             Key::Digit(d) => {
-                assert!(d < 10, "key index out of bounds");
+                assert!(d < 10, "key index {} out of bounds", d);
                 d as usize
             },
             Key::Plus => 10,
@@ -236,7 +236,38 @@ impl PossibilityMatrix {
         }
     }
 
+    /// solutions calls the given callback function with each solution
+    pub fn solutions<F: FnMut(String) -> bool>(&self, mut f: F) {
+        let mut equation = Equation::new();
+        while equation.next_equation_template(self) {
+            // is it within the constraints?
+            if !self.operator_check(&equation) {
+                continue
+            }
+            // does it compile?
+            let mut ast = match equation.check_compile() {
+                Err(_) => continue,
+                Ok(ast) => ast,
+            };
+            // does it make any sense?
+            match ast.bounds(self) {
+                Some(_) => (),
+                None => continue,
+            }
+            // does it have any solutions?
+            ast.first(self);
+            while ast.next(self, None) {
+                if !f(format!("{}", ast)) {
+                    return
+                }
+            }
+        }
+    }
+
     fn can_be(&self, mut value: i32, slot: ProgIndex, width: IntWidth) -> bool {
+        if value < 1 {
+            return false
+        }
         for i in (0..width).rev() {
             if value == 0 {
                 return false
@@ -334,14 +365,12 @@ impl PossibilityMatrix {
     }
 
     // check if the operators in this equation can satisfy the constraint matrix
-    fn operator_check(&mut self, e: &Equation) -> bool {
+    fn operator_check(&self, e: &Equation) -> bool {
         for (slot, key) in e.keys.iter().enumerate() {
             match *key {
                 Key::Digit(_) => {
-                    for operator in Self::OPERATOR_KEYS {
-                        if self[(slot, operator)] == Possibility::Certain {
-                            return false
-                        }
+                    if let Possibility::Impossible = self.any_digit(slot) {
+                        return false
                     }
                 },
                 _ => {
@@ -368,14 +397,6 @@ impl Equation {
             keys: [Key::Digit(1); 8],
             idx: 0,
         }
-    }
-
-    fn parse(s: &str) -> Result<Self, char> {
-        let mut e = Self::new();
-        for (i, c) in s.chars().enumerate() {
-            e.keys[i] = Key::parse(c)?;
-        }
-        Ok(e)
     }
 
     /// next_equation_template changes the underlying equation so that it compiles to something
@@ -469,6 +490,31 @@ impl KeyStream for Equation {
         match self.keys.get(self.idx) {
             Some(k) => Some(*k),
             None => None,
+        }
+    }
+}
+
+impl KeyStream for iter::Peekable<str::Chars<'static>> {
+
+    fn next_key(&mut self) -> Option<Key> {
+        if let Some(c) = self.next() {
+            match Key::parse(c) {
+                Ok(k) => Some(k),
+                Err(_) => panic!("cannot parse {}", c),
+            }
+        } else {
+            None
+        }
+    }
+
+    fn peek_key(&mut self) -> Option<Key> {
+        if let Some(c) = self.peek() {
+            match Key::parse(*c) {
+                Ok(k) => Some(k),
+                Err(_) => panic!("cannot parse {}", c),
+            }
+        } else {
+            None
         }
     }
 }
@@ -729,11 +775,16 @@ impl AST {
                 }
                 let (rhs_value, okay) = match rhs.value() {
                     Ok(rhs_value) => balance(rhs_value),
-                    Err(_) => continue
+                    Err(_) => {
+                        skip_rhs_increment = false;
+                        continue
+                    }
                 };
                 if okay {
                     set_value = rhs_value;
                     break
+                } else {
+                    skip_rhs_increment = false;
                 }
             }
 
@@ -827,33 +878,7 @@ impl fmt::Display for Equation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str;
-    use std::iter;
 
-    impl KeyStream for iter::Peekable<str::Chars<'static>> {
-
-        fn next_key(&mut self) -> Option<Key> {
-            if let Some(c) = self.next() {
-                match Key::parse(c) {
-                    Ok(k) => Some(k),
-                    Err(_) => panic!("cannot parse {}", c),
-                }
-            } else {
-                None
-            }
-        }
-
-        fn peek_key(&mut self) -> Option<Key> {
-            if let Some(c) = self.peek() {
-                match Key::parse(*c) {
-                    Ok(k) => Some(k),
-                    Err(_) => panic!("cannot parse {}", c),
-                }
-            } else {
-                None
-            }
-        }
-    }
 
     #[test]
     fn test_compile_programs() {
@@ -1084,7 +1109,6 @@ mod tests {
 
     #[test]
     fn test_full_algorithm() {
-
         // this is the nerdle I'm looking at right now, I can't solve it :/
         let mut constraints = PossibilityMatrix::blank();
         constraints.eliminate_everywhere(Key::Digit(1));
@@ -1113,26 +1137,13 @@ mod tests {
         // this constraint was wrong in hindsight
         constraints.set_certain(7, Key::Digit(9));
 
-        let mut equation = Equation::new();
         let mut found = false;
-        while equation.next_equation_template(&constraints) {
-            // does it compile?
-            let mut ast = match equation.check_compile() {
-                Err(_) => continue,
-                Ok(ast) => ast,
-            };
-            // does it make any sense?
-            match ast.bounds(&constraints) {
-                Some(_) => (),
-                None => continue,
-            }
-            assert_eq!(format!("{}", ast), "111/11=1");
-            ast.first(&constraints);
-            while ast.next(&constraints, None) {
-                assert_eq!(format!("{}", ast), "747/83=9");
-                found = true
-            }
-        }
+        constraints.solutions(|s| {
+            assert!(!found, "only 1 solution should exist");
+            assert_eq!(s, "747/83=9");
+            found = true;
+            true
+        });
         assert!(found, "didn't find the answer")
     }
 
