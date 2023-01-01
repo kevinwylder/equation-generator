@@ -87,8 +87,8 @@ pub enum Key {
 }
 
 /// PossibilityMatrix stores constraints on the board
-pub struct PossibilityMatrix<const WIDTH: usize> {
-    // 15 keys * 8 slots
+pub struct PossibilityMatrix {
+    width: usize,
     matrix: Vec<Possibility>,
 }
 
@@ -118,25 +118,25 @@ impl Key {
 
 }
 
-impl <const WIDTH: usize> ops::Index<(usize, Key)> for PossibilityMatrix<WIDTH> {
+impl ops::Index<(usize, Key)> for PossibilityMatrix {
     type Output = Possibility;
 
     fn index(&self, idx: (usize, Key)) -> &Possibility {
         let (slot, key) = idx;
-        assert!(slot < WIDTH, "slot index out of bounds");
+        assert!(slot < self.width, "slot index out of bounds");
         &self.matrix[Self::key_idx(key) + 15 * slot]
     }
 }
 
-impl <const WIDTH: usize> ops::IndexMut<(usize, Key)> for PossibilityMatrix<WIDTH> {
+impl ops::IndexMut<(usize, Key)> for PossibilityMatrix {
     fn index_mut(&mut self, idx: (usize, Key)) -> &mut Possibility {
         let (slot, key) = idx;
-        assert!(slot < WIDTH, "slot index out of bounds");
+        assert!(slot < self.width, "slot index out of bounds");
         &mut self.matrix[Self::key_idx(key) + 15 * slot]
     }
 }
 
-impl <const WIDTH: usize> PossibilityMatrix<WIDTH> {
+impl PossibilityMatrix {
 
     const OPERATOR_KEYS: [Key; 5] = [Key::Plus, Key::Minus, Key::Multiply, Key::Divide, Key::Equal];
     const DIGIT_KEYS: [Key; 10] = [
@@ -164,9 +164,10 @@ impl <const WIDTH: usize> PossibilityMatrix<WIDTH> {
         }
     }
 
-    pub fn blank() -> Self {
-        let num_entries = 15 * WIDTH;
-        let mut matrix = Self{
+    pub fn blank(width: usize) -> Self {
+        let num_entries = 15 * width;
+        let mut matrix = Self {
+            width,
             matrix: Vec::with_capacity(num_entries),
         };
         for _ in 0..num_entries {
@@ -176,7 +177,7 @@ impl <const WIDTH: usize> PossibilityMatrix<WIDTH> {
         // assign impossible to operators on the edges
         for key in Self::OPERATOR_KEYS {
             matrix.eliminate(0, key);
-            matrix.eliminate(WIDTH - 1, key);
+            matrix.eliminate(width - 1, key);
         }
         // also leading zero is impossible
         matrix.eliminate(0, Key::Digit(0));
@@ -231,7 +232,7 @@ impl <const WIDTH: usize> PossibilityMatrix<WIDTH> {
     }
 
     pub fn eliminate_everywhere(&mut self, key: Key) {
-        for slot in 0..WIDTH {
+        for slot in 0..self.width {
             // do not overwrite certain cells
             let cell = &mut self[(slot, key)];
             if *cell != Possibility::Certain {
@@ -242,7 +243,7 @@ impl <const WIDTH: usize> PossibilityMatrix<WIDTH> {
 
     /// solutions calls the given callback function with each solution
     pub fn solutions<F: FnMut(String) -> bool>(&self, mut f: F) {
-        let mut equation = Equation::new();
+        let mut equation = Equation::new(self.width);
         while equation.next_equation_template(self) {
             // is it within the constraints?
             if !self.operator_check(&equation) {
@@ -369,7 +370,7 @@ impl <const WIDTH: usize> PossibilityMatrix<WIDTH> {
     }
 
     // check if the operators in this equation can satisfy the constraint matrix
-    fn operator_check(&self, e: &Equation<WIDTH>) -> bool {
+    fn operator_check(&self, e: &Equation) -> bool {
         for (slot, key) in e.keys.iter().enumerate() {
             match *key {
                 Key::Digit(_) => {
@@ -389,18 +390,24 @@ impl <const WIDTH: usize> PossibilityMatrix<WIDTH> {
 }
 
 /// Equation is the current game board
-struct Equation<const WIDTH: usize> {
-    keys: [Key; WIDTH],
+struct Equation {
+    width: usize,
+    keys: Vec<Key>,
     idx: usize,
 }
 
-impl <const WIDTH: usize> Equation<WIDTH> {
+impl Equation {
     
-    fn new() -> Self {
-        Self {
-            keys: [Key::Digit(1); WIDTH],
+    fn new(width: usize,) -> Self {
+        let mut eqn = Self {
+            width,
+            keys: Vec::with_capacity(width),
             idx: 0,
+        };
+        for _ in 0..width {
+            eqn.keys.push(Key::Digit(1))
         }
+        eqn
     }
 
     /// next_equation_template changes the underlying equation so that it compiles to something
@@ -408,9 +415,9 @@ impl <const WIDTH: usize> Equation<WIDTH> {
     ///
     /// TODO there are some heuristics that would speed up iteration over equations and guarantee
     /// each one compiles (don't put operators next to each other, only put one = sign)
-    fn next_equation_template(&mut self, constraints: &PossibilityMatrix<WIDTH>) -> bool {
+    fn next_equation_template(&mut self, constraints: &PossibilityMatrix) -> bool {
         self.idx = 0;
-        for slot in (1..(WIDTH - 1)).rev() {
+        for slot in (1..(self.width - 1)).rev() {
             let mut has_rolled_over = false;
             let key = &mut self.keys[slot];
             let current = match key {
@@ -469,7 +476,7 @@ impl <const WIDTH: usize> Equation<WIDTH> {
 
     fn check_compile(&mut self) -> Result<AST, CompileError> {
         self.idx = 0;
-        for ref mut key in self.keys {
+        for key in &mut self.keys {
             match key {
                 Key::Digit(d) => *d = 1,
                 _ => (),
@@ -484,7 +491,7 @@ impl <const WIDTH: usize> Equation<WIDTH> {
 
 }
 
-impl <const WIDTH: usize> KeyStream for Equation<WIDTH> {
+impl KeyStream for Equation {
     fn next_key(&mut self) -> Option<Key> {
         let key = self.peek_key();
         self.idx += 1;
@@ -543,7 +550,7 @@ impl AST {
     }
 
     /// bounds computes the upper and lower bound for each expression
-    fn bounds<const W: usize>(&self, constraints: &PossibilityMatrix<W>) -> Option<(i32, i32)> {
+    fn bounds(&self, constraints: &PossibilityMatrix) -> Option<(i32, i32)> {
         match self {
             AST::Equals(lhs, rhs) => {
                 match (lhs.bounds(constraints), rhs.bounds(constraints)) {
@@ -689,7 +696,7 @@ impl AST {
         )
     }
 
-    fn first<const W: usize>(&mut self, constraint: &PossibilityMatrix<W>) {
+    fn first(&mut self, constraint: &PossibilityMatrix) {
         match self {
             AST::Integer(value, slot, width) => {
                 match constraint.first_int(0, *slot, *width) {
@@ -707,7 +714,7 @@ impl AST {
     /// increment to the next valid AST integers. Returns true if successful, false otherwise
     /// the resulting AST after using this function *should* evaluate properly without any division
     /// by zero, fractions, unbalanced equations, etc...
-    fn next<const W: usize>(&mut self, constraint: &PossibilityMatrix<W>, set: Option<i32>) -> bool {
+    fn next(&mut self, constraint: &PossibilityMatrix, set: Option<i32>) -> bool {
         match self {
             AST::Equals(lhs, rhs) => Self::iter_pair_balanced(lhs, rhs, constraint, |rhs_value| (rhs_value, true)),
             AST::Upper(lhs, op, rhs) => {
@@ -744,7 +751,7 @@ impl AST {
         }
     }
 
-    fn iter_pair<const W: usize>(lhs: &mut AST, rhs: &mut AST, constraint: &PossibilityMatrix<W>) -> bool {
+    fn iter_pair(lhs: &mut AST, rhs: &mut AST, constraint: &PossibilityMatrix) -> bool {
         if rhs.next(constraint, None) {
             return true
         }
@@ -754,7 +761,7 @@ impl AST {
 
     /// iter_pair_balanced increments the rhs, then tries to set lhs to a value that keeps the
     /// equation balanced as defined by the balance function (depends on the upper operation)
-    fn iter_pair_balanced<const W: usize, F: Fn(i32) -> (i32, bool)>(lhs: &mut AST, rhs: &mut AST, constraint: &PossibilityMatrix<W>, balance: F) -> bool {
+    fn iter_pair_balanced<F: Fn(i32) -> (i32, bool)>(lhs: &mut AST, rhs: &mut AST, constraint: &PossibilityMatrix, balance: F) -> bool {
         let lhs_is_int = match lhs {
             AST::Integer(_, _, _) => true,
             _ => false
@@ -864,9 +871,9 @@ impl fmt::Display for Key {
     }
 }
 
-impl <const W: usize> fmt::Display for Equation<W> {
+impl fmt::Display for Equation {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        for k in self.keys {
+        for k in &self.keys {
             write!(f, "{}", k)?;
         }
         Ok(())
@@ -926,7 +933,7 @@ mod tests {
 
     #[test]
     fn test_constraint_matrix() {
-        let mut matrix = PossibilityMatrix::<8>::blank();
+        let mut matrix = PossibilityMatrix::blank(8);
         assert_eq!(matrix[(0, Key::Equal)], Possibility::Impossible);
         assert_eq!(matrix[(0, Key::Digit(0))], Possibility::Impossible);
         assert_eq!(matrix[(7, Key::Equal)], Possibility::Impossible);
@@ -957,8 +964,8 @@ mod tests {
 
     #[test]
     fn test_next_equation_template() {
-        let mut matrix = PossibilityMatrix::<8>::blank();
-        let mut equation = Equation::new();
+        let mut matrix = PossibilityMatrix::blank(8);
+        let mut equation = Equation::new(8);
         assert_eq!(format!("{}", equation), "11111111");
 
         equation.next_equation_template(&matrix);
@@ -985,46 +992,46 @@ mod tests {
     fn test_ast_bounds() {
         let tests = vec![
             ("1", Some((1, 7)), {
-                let mut c = PossibilityMatrix::<8>::blank();
+                let mut c = PossibilityMatrix::blank(1);
                 c.eliminate_everywhere(Key::Digit(9));
                 c.eliminate_everywhere(Key::Digit(8));
                 c
             }),
             ("10", Some((10, 80)), {
-                let mut c = PossibilityMatrix::<8>::blank();
+                let mut c = PossibilityMatrix::blank(2);
                 c.eliminate(0, Key::Digit(9));
                 c.set_certain(1, Key::Digit(0));
                 c
             }),
             ("1+1", Some((2, 15)), {
-                let mut c = PossibilityMatrix::<8>::blank();
+                let mut c = PossibilityMatrix::blank(3);
                 c.eliminate_everywhere(Key::Digit(9));
                 c.eliminate(0, Key::Digit(8));
                 c
             }),
             ("1*1", Some((1, 81)), {
-                let mut c = PossibilityMatrix::<8>::blank();
+                let mut c = PossibilityMatrix::blank(3);
                 c.eliminate_everywhere(Key::Digit(6));
                 c.eliminate(0, Key::Digit(8));
                 c
             }),
             ("10/1", Some((3, 29)), {
-                let mut c = PossibilityMatrix::<8>::blank();
+                let mut c = PossibilityMatrix::blank(4);
                 c.set_certain(0, Key::Digit(2));
                 c
             }),
             ("11+1*1", Some((13, 152)), {
-                let mut c = PossibilityMatrix::<8>::blank();
+                let mut c = PossibilityMatrix::blank(6);
                 c.eliminate_everywhere(Key::Digit(9));
                 c.eliminate(1, Key::Digit(0));
                 c.eliminate(1, Key::Digit(1));
                 c
             }),
-            ("11+1*1/1", Some((11, 180)), PossibilityMatrix::<8>::blank()),
-            ("11=1", None, PossibilityMatrix::<8>::blank()),
-            ("1=1", Some((0, 0)), PossibilityMatrix::<8>::blank()),
+            ("11+1*1/1", Some((11, 180)), PossibilityMatrix::blank(8)),
+            ("11=1", None, PossibilityMatrix::blank(4)),
+            ("1=1", Some((0, 0)), PossibilityMatrix::blank(3)),
             ("1=1", None, {
-                let mut c = PossibilityMatrix::<8>::blank();
+                let mut c = PossibilityMatrix::blank(3);
                 c.set_certain(0, Key::Digit(1));
                 c.set_certain(2, Key::Digit(2));
                 c
@@ -1039,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_first_int() {
-        let mut matrix = PossibilityMatrix::<4>::blank();
+        let mut matrix = PossibilityMatrix::blank(4);
         matrix.set_certain(0, Key::Digit(3));
         matrix.eliminate(1, Key::Digit(7));
         assert_eq!(matrix.first_int(0, 0, 2), Some(30));
@@ -1055,7 +1062,7 @@ mod tests {
 
     #[test]
     fn test_iter_pair_balanced() {
-        let mut matrix = PossibilityMatrix::<5>::blank();
+        let mut matrix = PossibilityMatrix::blank(5);
         let mut prog = "1*1+1".chars().peekable();
         let mut ast = AST::compile(&mut prog).unwrap();
         
@@ -1073,7 +1080,7 @@ mod tests {
             assert_eq!(format!("{}", ast), answer);
         }
 
-        matrix = PossibilityMatrix::<5>::blank();
+        matrix = PossibilityMatrix::blank(5);
         ast.first(&matrix);
         answers = vec![
             "5*3+1", "3*5+1", "7*2+2", "2*7+2", "6*2+4", 
@@ -1108,7 +1115,7 @@ mod tests {
     #[test]
     fn test_full_algorithm() {
         // this is the nerdle I'm looking at right now, I can't solve it :/
-        let mut constraints = PossibilityMatrix::<8>::blank();
+        let mut constraints = PossibilityMatrix::blank(8);
         constraints.eliminate_everywhere(Key::Digit(1));
         constraints.eliminate_everywhere(Key::Digit(2));
         constraints.eliminate_everywhere(Key::Digit(5));
