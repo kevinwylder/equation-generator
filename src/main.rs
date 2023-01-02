@@ -1,4 +1,4 @@
-use nerdle::{PossibilityMatrix, Key};
+use nerdle_solver::{PossibilityMatrix, Key};
 
 fn main() {
     let mut game = PossibilityMatrix::blank(8);

@@ -31,7 +31,7 @@ type IntWidth = usize;
 
 
 #[derive(Debug)]
-enum CompileError {
+pub enum CompileError {
     UnexpectedOperator(Key),
     UnexpectedNumber(Key),
     LeadingZero,
@@ -41,14 +41,14 @@ enum CompileError {
 }
 
 #[derive(PartialEq,Debug)]
-enum EvalError {
+pub enum EvalError {
     NotEquals,
     Fraction,
     DivZero,
 }
 
 /// KeyStream is used by the compiler to parse a calculator program
-trait KeyStream {
+pub trait KeyStream {
     fn next_key(&mut self) -> Option<Key>;
     fn peek_key(&mut self) -> Option<Key>;
 
@@ -101,7 +101,7 @@ pub enum Possibility {
 
 impl Key {
 
-    fn parse(c: char) -> Result<Key, char> {
+    pub fn parse(c: char) -> Result<Key, char> {
         match c {
             '+' => Ok(Key::Plus),
             '-' => Ok(Key::Minus),
@@ -812,6 +812,25 @@ impl AST {
         }
     }
 
+}
+
+#[derive(Debug)]
+pub enum EquationError {
+    Syntax(CompileError),
+    Value(EvalError)
+}
+
+pub fn check_equation<K: KeyStream>(k: &mut K) -> Option<EquationError> {
+    match AST::compile(k) {
+        Ok(ast) => match ast {
+            AST::Equals(_, _) => match ast.value() {
+                Err(e) => Some(EquationError::Value(e)),
+                Ok(_) => None,
+            },
+            _ => Some(EquationError::Syntax(CompileError::MissingEquals))
+        }
+        Err(e) => Some(EquationError::Syntax(e))
+    }
 }
 
 impl fmt::Debug for AST {
