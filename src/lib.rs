@@ -1,9 +1,12 @@
 use std::fmt::Write;
+use std::iter::zip;
 use std::str;
 use std::iter;
 use std::ptr;
 use std::fmt;
 use std::ops;
+use std::hash;
+
 
 /// abstract syntax tree for the calculator language
 enum AST {
@@ -242,8 +245,9 @@ impl PossibilityMatrix {
     }
 
     /// solutions calls the given callback function with each solution
-    pub fn solutions<F: FnMut(String) -> bool>(&self, mut f: F) {
+    pub fn solutions<F: FnMut(&Equation) -> bool>(&self, mut f: F) {
         let mut equation = Equation::new(self.width);
+        let mut yielder = Equation::new(self.width);
         while equation.next_equation_template(self) {
             // is it within the constraints?
             if !self.operator_check(&equation) {
@@ -262,7 +266,8 @@ impl PossibilityMatrix {
             // does it have any solutions?
             ast.first(self);
             while ast.next(self, None) {
-                if !f(format!("{}", ast)) {
+                ast.into_equation(&mut yielder, 0);
+                if !f(&yielder) {
                     return
                 }
             }
@@ -390,8 +395,8 @@ impl PossibilityMatrix {
 }
 
 /// Equation is the current game board
-struct Equation {
-    width: usize,
+#[derive(Clone,PartialEq)]
+pub struct Equation {
     keys: Vec<Key>,
     idx: usize,
 }
@@ -400,7 +405,6 @@ impl Equation {
     
     fn new(width: usize,) -> Self {
         let mut eqn = Self {
-            width,
             keys: Vec::with_capacity(width),
             idx: 0,
         };
@@ -417,7 +421,7 @@ impl Equation {
     /// each one compiles (don't put operators next to each other, only put one = sign)
     fn next_equation_template(&mut self, constraints: &PossibilityMatrix) -> bool {
         self.idx = 0;
-        for slot in (1..(self.width - 1)).rev() {
+        for slot in (1..(self.keys.len() - 1)).rev() {
             let mut has_rolled_over = false;
             let key = &mut self.keys[slot];
             let current = match key {
@@ -487,6 +491,32 @@ impl Equation {
             AST::Equals(_, _) => Ok(ast),
             _ => Err(CompileError::MissingEquals),
         }
+    }
+
+    /// compute_hint_id returns an ID representing the resulting hint if you were go guess the
+    /// provided equation when this equation is the answer.
+    pub fn compute_hint_id(&self, guess: &Equation) -> u32 {
+        assert_eq!(self.keys.len(), guess.keys.len(), "guess was not for the correct sized answer");
+        // count the frequency of each key
+        let mut counts = [0; 15];
+        for k in &self.keys {
+            counts[PossibilityMatrix::key_idx(*k)] += 1
+        }
+
+        let mut id = 0;
+        for (guessed, correct) in zip(&guess.keys, &self.keys) {
+            let idx = PossibilityMatrix::key_idx(*guessed);
+            if guessed == correct {
+                id = (id << 2) + 1
+            } else if counts[idx] > 0 {
+                id = (id << 2) + 2
+            } else {
+                id = (id << 2) + 3
+            }
+            counts[idx] -= 1
+        }
+
+        id
     }
 
 }
@@ -812,6 +842,40 @@ impl AST {
         }
     }
 
+    fn into_equation(&self, eqn: &mut Equation, mut offset: usize) -> usize {
+        match self {
+            AST::Equals(lhs, rhs) => {
+                offset = lhs.into_equation(eqn, offset);
+                eqn.keys[offset] = Key::Equal;
+                rhs.into_equation(eqn, offset + 1)
+            },
+            AST::Upper(lhs, op, rhs) => {
+                offset = lhs.into_equation(eqn, offset);
+                match op {
+                    UpperOp::Plus => eqn.keys[offset] = Key::Plus,
+                    UpperOp::Minus => eqn.keys[offset] = Key::Minus,
+                }
+                rhs.into_equation(eqn, offset + 1)
+            },
+            AST::Lower(lhs, op, rhs) => {
+                offset = lhs.into_equation(eqn, offset);
+                match op {
+                    LowerOp::Mul => eqn.keys[offset] = Key::Multiply,
+                    LowerOp::Div => eqn.keys[offset] = Key::Divide,
+                }
+                rhs.into_equation(eqn, offset + 1)
+            },
+            &AST::Integer(mut val, slot, width) => {
+                assert_eq!(offset, slot, "assigning an int to equation with wrong offset!");
+                for i in (0..width).rev() {
+                    eqn.keys[offset + i] = Key::Digit((val % 10) as u8);
+                    val /= 10;
+                }
+                assert!(val == 0, "digit assignment reveals overflowed int!");
+                offset + width
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1164,7 +1228,7 @@ mod tests {
         let mut found = false;
         constraints.solutions(|s| {
             assert!(!found, "only 1 solution should exist");
-            assert_eq!(s, "747/83=9");
+            assert_eq!(format!("{}", s), "747/83=9");
             found = true;
             true
         });
