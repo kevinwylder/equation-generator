@@ -5,7 +5,6 @@ use std::iter;
 use std::ptr;
 use std::fmt;
 use std::ops;
-use std::hash;
 
 
 /// abstract syntax tree for the calculator language
@@ -248,6 +247,7 @@ impl PossibilityMatrix {
     pub fn solutions<F: FnMut(&Equation) -> bool>(&self, mut f: F) {
         let mut equation = Equation::new(self.width);
         let mut yielder = Equation::new(self.width);
+
         while equation.next_equation_template(self) {
             // is it within the constraints?
             if !self.operator_check(&equation) {
@@ -269,6 +269,29 @@ impl PossibilityMatrix {
                 ast.into_equation(&mut yielder, 0);
                 if !f(&yielder) {
                     return
+                }
+            }
+        }
+    }
+
+    /// feed uses the equation and colors to further constrain the results
+    pub fn feed(&mut self, eqn: &Equation, colors: &[Possibility]) {
+        // TODO resolve when subsequent incorrect placements are impossible
+        assert_eq!(self.width, colors.len(), "wrong number of colors");
+        assert_eq!(eqn.keys.len(), colors.len(), "wrong equation length");
+        let mut protected = [false; 15];
+        for (i, (key, possibility)) in zip(&eqn.keys, colors).enumerate() {
+            match possibility {
+                Possibility::Certain => self.set_certain(i, *key),
+                Possibility::Unknown => {
+                    // HACK: protect from eliminate_everywhere
+                    protected[Self::key_idx(*key)] = true;
+                    self.eliminate(i, *key)
+                },
+                Possibility::Impossible => {
+                    if !protected[Self::key_idx(*key)] {
+                        self.eliminate_everywhere(*key)
+                    }
                 }
             }
         }
@@ -402,8 +425,19 @@ pub struct Equation {
 }
 
 impl Equation {
+
+    pub fn parse(e: &str) -> Result<Self, char> {
+        let mut eqn = Self {
+            keys: Vec::with_capacity(e.len()),
+            idx: 0,
+        };
+        for c in e.chars() {
+            eqn.keys.push(Key::parse(c)?)
+        }
+        Ok(eqn)
+    }
     
-    fn new(width: usize,) -> Self {
+    fn new(width: usize) -> Self {
         let mut eqn = Self {
             keys: Vec::with_capacity(width),
             idx: 0,
@@ -799,6 +833,7 @@ impl AST {
 
         // this is so that LHS has an opportunity to yield alternate ways to have the same value
         let mut skip_rhs_increment = true;
+        let mut rhs_has_incremented = false;
 
         loop {
             let set_value;
@@ -807,6 +842,7 @@ impl AST {
             // might not be possible to evaluate the rhs after increment, so do it in a loop
             loop {
                 if !skip_rhs_increment {
+                    rhs_has_incremented = true;
                     if !rhs.next(constraint, None) {
                         return false
                     }
@@ -828,7 +864,7 @@ impl AST {
             // Integers cannot be set with the `Some(val)` parameter because it cannot know when to
             // roll over
             if let AST::Integer(v, slot, width) = lhs {
-                if *v != set_value && constraint.can_be(set_value, *slot, *width) {
+                if (rhs_has_incremented || *v != set_value) && constraint.can_be(set_value, *slot, *width) {
                     *v = set_value;
                     return true
                 }
@@ -894,6 +930,43 @@ pub fn check_equation<K: KeyStream>(k: &mut K) -> Option<EquationError> {
             _ => Some(EquationError::Syntax(CompileError::MissingEquals))
         }
         Err(e) => Some(EquationError::Syntax(e))
+    }
+}
+
+impl fmt::Debug for PossibilityMatrix {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        for key in &Self::ALL_KEYS {
+            write!(f, "|{}|", key)?;
+            for slot in 0..self.width {
+                match self[(slot, *key)] {
+                    Possibility::Certain => write!(f, "*|")?,
+                    Possibility::Unknown => write!(f, ".|")?,
+                    Possibility::Impossible => write!(f, " |")?,
+                }
+            }
+            write!(f, "\n")?;
+        }
+        write!(f, "---")?;
+        for _ in 0..self.width {
+            write!(f, "--")?;
+        }
+        write!(f, "\n  ")?;
+        for slot in 0..self.width {
+            let mut found = false;
+            for key in &Self::ALL_KEYS {
+                match self[(slot, *key)] {
+                    Possibility::Certain => {
+                        found = true;
+                        write!(f, " {}", key)?;
+                    },
+                    _ => ()
+                }
+            }
+            if !found {
+                write!(f, "  ")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1235,4 +1308,46 @@ mod tests {
         assert!(found, "didn't find the answer")
     }
 
+    #[test]
+    fn fix_missing_answer() {
+        let answer = Equation::parse("4*77=308").unwrap();
+        let mut constraints = PossibilityMatrix::blank(8);
+        /*
+        let mut found = false;
+        constraints.solutions(|e| {
+            if e == &answer {
+                found = true;
+                false
+            } else {
+                true
+            }
+        });
+        assert!(found, "found the answer in dictionary");
+        */
+
+        // for some reason this eliminates the answer?
+        constraints.set_certain(0, Key::Digit(4));
+
+        let mut ast = AST::compile(&mut answer.clone()).unwrap();
+        println!("{} {:?}", ast, ast.bounds(&constraints));
+        ast.first(&constraints);
+        loop {
+            println!("test - {}", ast);
+            if !ast.next(&constraints, None) {
+                break
+            }
+        }
+
+        let mut found = false;
+        constraints.solutions(|e| {
+            if e == &answer {
+                found = true;
+                false
+            } else {
+                true
+            }
+        });
+        assert!(found, "found the answer in dictionary");
+
+    }
 }

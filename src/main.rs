@@ -1,44 +1,101 @@
 use std::{collections::HashMap, sync::mpsc::channel, thread};
 
-use nerdle_solver::{PossibilityMatrix, Key, Equation};
+use nerdle_solver::{PossibilityMatrix, Equation, Possibility};
 
 fn main() {
-    let game = if false {
-        let mut game = PossibilityMatrix::blank(8);
 
-        // 26-12=14
-        game.set_certain(4, Key::Digit(2));
-        game.set_certain(5, Key::Equal);
-        game.set_certain(6, Key::Digit(1));
-        game.eliminate_everywhere(Key::Digit(1));
-        game.eliminate_everywhere(Key::Digit(2));
-        game.eliminate_everywhere(Key::Digit(6));
-        game.eliminate_everywhere(Key::Minus);
-        game.eliminate_everywhere(Key::Digit(4));
+    let mut game1 = PossibilityMatrix::blank(8);
+    let mut game2 = PossibilityMatrix::blank(8);
 
-        // 43-5*7=8
-        game.eliminate(1, Key::Digit(3));
-        game.eliminate(3, Key::Digit(5));
-        game.eliminate(4, Key::Multiply);
-        game.eliminate_everywhere(Key::Digit(7));
-        game.eliminate_everywhere(Key::Digit(8));
+    let guess1 = Equation::parse("48-32=16").unwrap();
+    game1.feed(&guess1, &[
+        Possibility::Impossible,
+        Possibility::Impossible,
+        Possibility::Impossible,
+        Possibility::Unknown,
+        Possibility::Unknown,
+        Possibility::Certain,
+        Possibility::Unknown,
+        Possibility::Unknown,
+    ]);
+    game2.feed(&guess1, &[
+        Possibility::Impossible,
+        Possibility::Unknown,
+        Possibility::Impossible,
+        Possibility::Unknown,
+        Possibility::Unknown,
+        Possibility::Certain,
+        Possibility::Unknown,
+        Possibility::Unknown,
+    ]);
 
-        game
-    } else {
-        PossibilityMatrix::blank(8)
-    };
+    let guess2 = Equation::parse("59+13=72").unwrap();
+    game1.feed(&guess2, &[
+        Possibility::Unknown,
+        Possibility::Impossible,
+        Possibility::Certain,
+        Possibility::Unknown,
+        Possibility::Unknown,
+        Possibility::Certain,
+        Possibility::Impossible,
+        Possibility::Unknown,
+    ]);
+    game2.feed(&guess2, &[
+        Possibility::Impossible,
+        Possibility::Impossible,
+        Possibility::Unknown,
+        Possibility::Impossible,
+        Possibility::Unknown,
+        Possibility::Certain,
+        Possibility::Unknown,
+        Possibility::Unknown,
+    ]);
 
-    let mut answers = vec![];
+    let guess3 = Equation::parse("3*8+6=30").unwrap();
+    game1.feed(&guess3, &[
+        Possibility::Certain,
+        Possibility::Impossible,
+        Possibility::Impossible,
+        Possibility::Unknown,
+        Possibility::Certain,
+        Possibility::Certain,
+        Possibility::Impossible,
+        Possibility::Impossible,
+    ]);
+    game2.feed(&guess3, &[
+        Possibility::Unknown,
+        Possibility::Impossible,
+        Possibility::Unknown,
+        Possibility::Certain,
+        Possibility::Impossible,
+        Possibility::Certain,
+        Possibility::Impossible,
+        Possibility::Impossible,
+    ]);
 
-    game.solutions(|possible_answer| {
-        answers.push(possible_answer.clone());
+    let mut answers1 = vec![];
+    game1.solutions(|possible_answer| {
+        answers1.push(possible_answer.clone());
         true
     });
-    
+
+    let mut answers2 = vec![];
+    game2.solutions(|possible_answer| {
+        answers2.push(possible_answer.clone());
+        true
+    });
+
+    let mut answers = vec![];
+    for answer1 in &answers1 {
+        for answer2 in &answers2 {
+            answers.push([answer1.clone(), answer2.clone()])
+        }
+    }
+
     compute_entropy_parallel(20, &answers);
 }
 
-fn compute_entropy_parallel(workers: usize, answers: &Vec<Equation>) {
+fn compute_entropy_parallel<const N: usize>(workers: usize, answers: &Vec<[Equation; N]>) {
 
     let mut all_guesses = vec![];
     let guesses = PossibilityMatrix::blank(8);
@@ -62,11 +119,16 @@ fn compute_entropy_parallel(workers: usize, answers: &Vec<Equation>) {
             for guess in partition {
                 let mut distribution = HashMap::<u32, f64>::new();
                 let mut is_answer = false;
-                for answer in &answers {
-                    if guess.eq(answer) {
-                        is_answer = true
+                for tuple in &answers {
+                    let mut result = 0;
+                    for answer in tuple.iter() {
+                        if guess.eq(answer) {
+                            is_answer = true;
+                            break
+                        }
+                        result <<= 16;
+                        result |= answer.compute_hint_id(&guess)
                     }
-                    let result = answer.compute_hint_id(&guess);
                     match distribution.get_mut(&result) {
                         Some(val) => *val += 1.,
                         None => {
