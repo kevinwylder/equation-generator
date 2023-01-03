@@ -10,30 +10,34 @@ width: 100%;
 font-family: Arial,sans-serif;
 `
 
-type EquationChar = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "0" | "+" | "-" | "*" | "/" | ""
+type EquationChar = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "0" | "+" | "-" | "*" | "/" | "=" | ""
 type ColorChar = "c" | "p" | "a" | ""
 interface Guess {
     equation: EquationChar[],
     result: ColorChar[],
 }
 
-const emptyGuess: () => Guess = () => ({
-    equation: ["", "", "", "", "", "", "", ""],
+const emptyGuess: (eqn?: string) => Guess = (eqn) => ({
+    equation: eqn ? eqn.split("") as EquationChar[] : ["", "", "", "", "", "", "", ""],
     result: ["", "", "", "", "", "", "", ""],
 })
 
 interface PageProps {
     checkCompiles: (equation: string) => string
+    possibleSolutions: (equations: string[], colors: string[], offset: number, count: number) => string[]
+    bestSolutions: (equations: string[], colors: string[], count: number) => string[]
+    countSolutions: (equations: string[], colors: string[]) => number
 }
 function Page(props: PageProps) {
     const [guesses, setGuesses] = useState<Guess[]>([]);
-    const [guess, setGuess] = useState(emptyGuess())
+    const [guess, setGuess] = useState(emptyGuess("48-32=16"));
     const finishGuess = () => {
         setGuesses([...guesses, guess])
         setGuess(emptyGuess());
     }
     return <PageLayout>
         <EquationSection checkCompiles={props.checkCompiles} guess={guess} guesses={guesses} setGuess={setGuess} finishGuess={finishGuess} />
+        <SolutionSection setGuess={setGuess} guesses={guesses} possibleSolutions={props.possibleSolutions} countSolutions={props.countSolutions} bestSolutions={props.bestSolutions} />
     </PageLayout>
 }
 
@@ -230,9 +234,74 @@ function Keyboard({ guess, setGuess, setCol, col, finishGuess, checkCompiles }: 
     </>
 }
 
-interface SolutionSectionProps { }
-function SolutionSection() {
-    return <div></div>
+const SolutionSectionStyle = styled.div`
+max-width: 380px;
+font-weight: 700;
+display: flex;
+flex-wrap: wrap;
+gap: 20px;
+.header {
+    width: 380px;
+}
+.equation {
+    font-family: courier new;
+}
+`
+
+interface SolutionSectionProps {
+    guesses: Guess[]
+    setGuess: (guess: Guess) => void
+    countSolutions: (equations: string[], colors: string[]) => number
+    bestSolutions: (equations: string[], colors: string[], num: number) => string[]
+    possibleSolutions: (equations: string[], colors: string[], offset: number, len: number) => string[]
+}
+function SolutionSection({ guesses, possibleSolutions, countSolutions, bestSolutions, setGuess }: SolutionSectionProps) {
+    let [solutions, setSolutions] = useState([]);
+    let [count, setCount] = useState(42682);
+    let [computeEntropy, setComputeEntropy] = useState(false)
+
+    const zipGuesses = () => {
+        let equations: string[] = [];
+        let colors: string[] = [];
+        guesses.forEach(({ equation, result }) => {
+            equations.push(equation.join(""));
+            colors.push(result.join(""));
+        })
+        return [equations, colors];
+    }
+
+    useEffect(() => {
+        if (!possibleSolutions || !bestSolutions) {
+            console.log(possibleSolutions);
+            return
+        }
+        let [equations, colors] = zipGuesses();
+        if (computeEntropy) {
+            setSolutions(bestSolutions(equations, colors, 100));
+        } else {
+            setSolutions(possibleSolutions(equations, colors, Math.floor(Math.random() * 42682), 100));
+        }
+    }, [guesses, possibleSolutions, computeEntropy])
+
+    useEffect(() => {
+        let [equations, colors] = zipGuesses();
+        let c = countSolutions(equations, colors);
+        setCount(c);
+        if (c < 2000) {
+            setComputeEntropy(true);
+        }
+    }, [guesses, countSolutions]);
+
+    const useEquation = (e: string) => () => setGuess(emptyGuess(e));
+
+    return <SolutionSectionStyle>
+        <div className="header"> {count} possible equations, showing {computeEntropy ? "best" : "random"} 100 </div>
+        {
+            solutions.map((s, i) =>
+                <div className="equation" onClick={useEquation(s)} key={i}> {s} </div>
+            )
+        }
+    </SolutionSectionStyle>
 }
 
 Promise.all([
