@@ -1,9 +1,50 @@
 use std::{collections::HashMap, sync::mpsc::channel, thread};
 
-use nerdle_solver::{PossibilityMatrix, Equation, Possibility};
+use nerdle_solver::{PossibilityMatrix, Equation, Possibility, Key};
 
 fn main() {
+    if true {
+        let workers = 10;
+        if true {
+            nerdle(workers)
+        } else {
+            binerdle(workers)
+        }
+    } else {
+        instant()
+    }
+}
 
+fn instant() {
+    let mut game = PossibilityMatrix::blank(8);
+    game.set_certain(0, Key::Digit(7));
+    game.eliminate(1, Key::Digit(4));
+    game.eliminate(2, Key::Digit(8));
+    game.eliminate(3, Key::Divide);
+    game.eliminate(4, Key::Digit(1));
+    game.eliminate(5, Key::Equal);
+    game.eliminate(6, Key::Digit(6));
+    game.eliminate(7, Key::Minus);
+    game.solutions(|e| {
+        println!("{}", e);
+        true
+    })
+}
+
+fn nerdle(workers: usize) {
+    let game = PossibilityMatrix::blank(8);
+
+    let mut answers = vec![];
+
+    game.solutions(|possible_answer| {
+        answers.push([possible_answer.clone()]);
+        true
+    });
+
+    compute_entropy_parallel(workers, &answers);
+}
+
+fn binerdle(workers: usize) {
     let mut game1 = PossibilityMatrix::blank(8);
     let mut game2 = PossibilityMatrix::blank(8);
 
@@ -92,9 +133,8 @@ fn main() {
         }
     }
 
-    compute_entropy_parallel(20, &answers);
+    compute_entropy_parallel(workers, &answers);
 }
-
 fn compute_entropy_parallel<const N: usize>(workers: usize, answers: &Vec<[Equation; N]>) {
 
     let mut all_guesses = vec![];
@@ -171,11 +211,12 @@ fn compute_entropy_parallel<const N: usize>(workers: usize, answers: &Vec<[Equat
         }
     });
 
-    for (bits, possible, answer) in answers {
-        if possible {
+    for (bits, possible, answer) in &answers {
+        if *possible {
             println!("{} (possible answer!) {} bits ", answer, bits);
         } else {
             println!("{} - {} bits ", answer, bits);
         }
     }
+    println!("{} total answers", answers.len())
 }

@@ -279,7 +279,7 @@ function SolutionSection({ guesses, possibleSolutions, countSolutions, bestSolut
         if (computeEntropy) {
             setSolutions(bestSolutions(equations, colors, 100));
         } else {
-            setSolutions(possibleSolutions(equations, colors, Math.floor(Math.random() * 42682), 100));
+            setSolutions(possibleSolutions(equations, colors, Math.floor(Math.random() * 17015), 100));
         }
     }, [guesses, possibleSolutions, computeEntropy])
 

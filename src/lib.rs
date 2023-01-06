@@ -603,6 +603,19 @@ impl AST {
         loop {
             match data.next_key() {
                 None => return Ok(tree),
+                Some(Key::Equal) => {
+                    // the integer on RHS of equals may be zero
+                    let int = match data.parse_int() {
+                        Ok((val, width)) => AST::Integer(val, index + 1, width),
+                        Err(CompileError::LeadingZero) => AST::Integer(0, index + 1, 1),
+                        Err(e) => return Err(e)
+                    };
+                    return match data.peek_key() {
+                        Some(Key::Digit(_)) => Err(CompileError::LeadingZero),
+                        Some(k) => Err(CompileError::UnexpectedOperator(k)),
+                        None => Ok(AST::Equals(Box::new(tree), Box::new(int))),
+                    }
+                }
                 Some(k) => {
                     let (val, width) = data.parse_int()?;
                     let integer = AST::Integer(val, index + 1, width);
@@ -1051,7 +1064,6 @@ mod tests {
             ("2*3+4", "((2*3)+4)", Ok(10)),
             ("2+3*4", "(2+(3*4))", Ok(14)),
             ("2+3*4=84", "(2+(3*4))=84", Err(EvalError::NotEquals)),
-            ("2+3*4=84-70", "(2+(3*4))=(84-70)", Ok(0)),
         ];
 
         for (i, test) in tests.iter().enumerate() {
@@ -1312,7 +1324,6 @@ mod tests {
     fn fix_missing_answer() {
         let answer = Equation::parse("4*77=308").unwrap();
         let mut constraints = PossibilityMatrix::blank(8);
-        /*
         let mut found = false;
         constraints.solutions(|e| {
             if e == &answer {
@@ -1323,7 +1334,6 @@ mod tests {
             }
         });
         assert!(found, "found the answer in dictionary");
-        */
 
         // for some reason this eliminates the answer?
         constraints.set_certain(0, Key::Digit(4));
